@@ -2,7 +2,6 @@ import torch
 import math
 import norm_dist_cuda as _C
 
-
 class NormDistF(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, group, p, need_grad, tag):

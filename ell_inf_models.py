@@ -12,7 +12,6 @@ def check_inf_and_eval(model):
             return False
     return True
 
-
 class MLPModel(nn.Module):
     def __init__(self, depth, width, input_dim, num_classes=10,
                  std=1.0, identity_val=None, scalar=False):
@@ -44,7 +43,6 @@ class MLPModel(nn.Module):
             margin = upper - torch.gather(lower, 1, targets.view(-1, 1))
             margin = margin.scatter(1, targets.view(-1, 1), 0)
             return x * self.scalar, margin / (2 * eps)
-
 
 class HybridModel(nn.Module):
     def __init__(self, depth, width, input_dim, hidden=512, num_classes=10, std=1.0, identity_val=None):

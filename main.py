@@ -12,6 +12,7 @@ from ell_inf_models import *
 from core.modules import NormDistBase
 from torch.nn.functional import cross_entropy
 from torch.optim import Adam
+from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser(description='L-infinity Dist Net')
 
@@ -56,13 +57,11 @@ def cal_acc(outputs, targets):
     predicted = torch.max(outputs.data, 1)[1]
     return (predicted == targets).float().mean().item()
 
-
 def parallel_reduce(*argv):
     tensor = torch.FloatTensor(argv).cuda()
     torch.distributed.all_reduce(tensor)
     ret = tensor.cpu() / torch.distributed.get_world_size()
     return ret.tolist()
-
 
 @contextmanager
 def eval(model):
@@ -71,7 +70,6 @@ def eval(model):
     yield
     for m, s in zip(model.modules(), state):
         m.train(s)
-
 
 def train(net, up, down, loss_fun, epoch, train_loader, optimizer, schedule, logger, train_logger, gpu, parallel, print_freq):
     batch_time, losses, correct_accs, certified_accs = [AverageMeter() for _ in range(4)]
@@ -333,7 +331,6 @@ class mixture():
         res = worst_outputs.clamp(min=0, max=self.clip)
         return res.max(dim=1)[0].mean() + self.lam * cross_entropy(outputs, targets)
 
-
 def main_worker(gpu, parallel, args, result_dir):
     if parallel:
         args.rank = args.rank + gpu
@@ -345,7 +342,7 @@ def main_worker(gpu, parallel, args, result_dir):
 
     assert args.batch_size % args.world_size == 0
     from dataset import load_data, get_statistics, default_eps, input_dim
-    train_loader, test_loader = load_data(args.dataset, 'data/', args.batch_size // args.world_size, parallel,
+    _, train_loader, _, test_loader = load_data(args.dataset, 'data/', args.batch_size // args.world_size, parallel,
                                           augmentation=True)
     mean, std = get_statistics(args.dataset)
     num_classes = len(train_loader.dataset.classes)
@@ -415,11 +412,11 @@ def main_worker(gpu, parallel, args, result_dir):
     args.epochs = [int(epoch) for epoch in args.epochs.split(',')]
     schedule = create_schedule(args, len(train_loader), model, optimizer, loss, 'smooth')
 
-    if args.visualize and output_flag:
-        from torch.utils.tensorboard import SummaryWriter
-        writer = SummaryWriter(result_dir)
-    else:
-        writer = None
+    # if args.visualize and output_flag:
+    #     from torch.utils.tensorboard import SummaryWriter
+    #     writer = SummaryWriter(result_dir)
+    # else:
+    writer = None
 
     for epoch in range(args.start_epoch, args.epochs[-1]):
         # if hasattr(model, 'scalar') and hasattr(model.scalar, 'item'):
@@ -435,39 +432,65 @@ def main_worker(gpu, parallel, args, result_dir):
             writer.add_scalar('curve/train acc', train_acc, epoch)
             writer.add_scalar('curve/train certified acc (fake)', train_cert, epoch)
 
-        if epoch % 5 == 4 or epoch >= args.epochs[-1] - 5:
-            test_acc = test(model, epoch, test_loader, logger, test_logger, gpu, parallel, args.print_freq)
-            if logger is not None:
-                logger.print('Calculating metrics for L_infinity dist model on training set')
-            train_inf_acc, train_inf_cert = certified_test(model, args.eps_test, up, down, epoch, train_loader,
-                                                           logger, train_inf_logger, gpu, parallel)
-            if logger is not None:
-                logger.print('Calculating metrics for L_infinity dist model on test set')
-            test_inf_acc, test_inf_cert = certified_test(model, args.eps_test, up, down, epoch, test_loader,
-                                                         logger, test_inf_logger, gpu, parallel)
-            if writer is not None:
-                writer.add_scalar('curve/test acc', test_acc, epoch)
-                writer.add_scalar('curve/train acc (inf model)', train_inf_acc, epoch)
-                writer.add_scalar('curve/train certified acc (inf model)', train_inf_cert, epoch)
-                writer.add_scalar('curve/test acc (inf model)', test_inf_acc, epoch)
-                writer.add_scalar('curve/test certified acc (inf model)', test_inf_cert, epoch)
+        # if epoch % 5 == 4 or epoch >= args.epochs[-1] - 5:
+        #     test_acc = test(model, epoch, test_loader, logger, test_logger, gpu, parallel, args.print_freq)
+        #     if logger is not None:
+        #         logger.print('Calculating metrics for L_infinity dist model on training set')
+        #     train_inf_acc, train_inf_cert = certified_test(model, args.eps_test, up, down, epoch, train_loader,
+        #                                                    logger, train_inf_logger, gpu, parallel)
+        #     if logger is not None:
+        #         logger.print('Calculating metrics for L_infinity dist model on test set')
+        #     test_inf_acc, test_inf_cert = certified_test(model, args.eps_test, up, down, epoch, test_loader,
+        #                                                  logger, test_inf_logger, gpu, parallel)
+        #     if writer is not None:
+        #         writer.add_scalar('curve/test acc', test_acc, epoch)
+        #         writer.add_scalar('curve/train acc (inf model)', train_inf_acc, epoch)
+        #         writer.add_scalar('curve/train certified acc (inf model)', train_inf_cert, epoch)
+        #         writer.add_scalar('curve/test acc (inf model)', test_inf_acc, epoch)
+        #         writer.add_scalar('curve/test certified acc (inf model)', test_inf_cert, epoch)
 
-        if epoch >= args.epochs[-1] * 0.9 and (epoch % 50 == 49 or epoch >= args.epochs[-1] - 5):
-            if logger is not None:
-                logger.print('Generate adversarial examples on test dataset')
-            robust_test_acc = gen_adv_examples(model, attacker, test_loader, gpu, parallel, logger, fast=False)
-            if writer is not None:
-                writer.add_scalar('curve/robust test acc', robust_test_acc, epoch)
+        # if epoch >= args.epochs[-1] * 0.9 and (epoch % 50 == 49 or epoch >= args.epochs[-1] - 5):
+        #     if logger is not None:
+        #         logger.print('Generate adversarial examples on test dataset')
+        #     robust_test_acc = gen_adv_examples(model, attacker, test_loader, gpu, parallel, logger, fast=False)
+        #     if writer is not None:
+        #         writer.add_scalar('curve/robust test acc', robust_test_acc, epoch)
 
     schedule(args.epochs[-1], 0)
     logger.print('============Training completes===========')
-    if logger is not None:
-        logger.print('Generate adversarial examples on test dataset')
-    gen_adv_examples(model, attacker, test_loader, gpu, parallel, logger, fast=False)
-    if logger is not None:
-        logger.print('Calculating test acc and certified test acc')
-    certified_test(model, args.eps_test, up, down, args.epochs[-1], test_loader,
-                   logger, test_inf_logger, gpu, parallel)
+    # if logger is not None:
+    #     logger.print('Generate adversarial examples on test dataset')
+    # gen_adv_examples(model, attacker, test_loader, gpu, parallel, logger, fast=False)
+    # if logger is not None:
+    #     logger.print('Calculating test acc and certified test acc')
+    
+    # certified_test(model, args.eps_test, up, down, args.epochs[-1], test_loader,
+    #                logger, test_inf_logger, gpu, parallel)
+        
+    # create another testloader of different batch size (50) for certifying over 200 samples
+    _, _, new_test_dataset, _ = load_data(args.dataset, 'data/', 50, parallel)
+    from torch.utils.data import Subset
+    new_batch_size = 50
+    indices = list(range(0, len(new_test_dataset), new_batch_size))
+    subset = Subset(new_test_dataset, indices)
+    subset_loader = DataLoader(subset, batch_size=new_batch_size, shuffle=False)
+    
+    worst_outputs = []
+    labels = []
+    with eval(model):
+        for batch_idx, (inputs, targets) in enumerate(subset_loader):
+            inputs = inputs.cuda(gpu, non_blocking=True)
+            targets = targets.cuda(gpu, non_blocking=True)
+            _, worst = model(inputs, targets=targets, eps=args.eps_test, up=up, down=down)
+            worst_outputs.append(worst)
+            labels.append(targets)
+    worst_outputs = torch.cat(worst_outputs, dim=0)
+    labels = torch.cat(labels, dim=0)
+    certified_acc_over_200_samples = cal_acc(worst_outputs, labels)
+    certified_acc_over_200_samples_logger = TableLogger(os.path.join(result_dir, 'certified_acc_over_200_samples.log'), ['eps_test', 'certified_acc'])
+    certified_acc_over_200_samples_logger.log({'eps_test': args.eps_test, 'certified_acc': certified_acc_over_200_samples})    
+    print("certified_acc_over_200_samples {}".format(certified_acc_over_200_samples))
+        
     if output_flag:
         torch.save({
             'state_dict': model.state_dict(),
@@ -476,9 +499,9 @@ def main_worker(gpu, parallel, args, result_dir):
     if writer is not None:
         writer.close()
 
-
 def main(father_handle, **extra_argv):
     args = parser.parse_args()
+    print(args)
     for key, val in extra_argv.items():
         setattr(args, key, val)
     result_dir = create_result_dir(args)
